@@ -1,0 +1,179 @@
+################################################################################
+## Fuzzy Regression Discontinbuity Designs Using Covariates for the eICU
+## Author: Nicolas Della Penna
+## I largely follow:
+## Regression Discontinuity Designs Using Covariates
+## Author: Calonico, Cattaneo, Farrell and Titiunik
+## WEBSITE: https://sites.google.com/site/rdpackages/
+## RDROBUST: install.packages(rdrobust)
+################################################################################
+
+
+```{r}
+rm(list=ls(all=TRUE))
+library(rdrobust)
+
+
+library(tidyverse)
+data <- read_csv('hb_rdd-forClass.csv') %>% select(-one_of('transfused_prior')) 
+#%>% filter(vasopressor_icu == 0)
+data <- data[complete.cases(data),] 
+means_by_hb <- data %>% group_by(hb_first_adm) %>% summarise(mean(transfused_icu),  mean(hospital_mortality) ,n(),mean(apache_score), mean(age), mean(male_gender), mean(vasopressor_icu))
+filter(means_by_hb, hb_first_adm <7.5, hb_first_adm > 6.4)
+```
+
+
+
+```{r}
+means_by_hb.m  <- means_by_hb %>% gather(variable,value, -hb_first_adm) 
+ggplot( means_by_hb.m, aes(hb_first_adm, value)) +   
+  geom_bar(aes(fill = variable), position = "dodge", stat="identity") +
+  facet_wrap(~variable,ncol=1, scales="free_y") + guides(fill=FALSE, color=FALSE)
+```
+
+```{r}
+ggplot( filter(means_by_hb.m, hb_first_adm>5, hb_first_adm < 9), aes(hb_first_adm, value)) +   
+  geom_bar(aes(fill = variable), position = "dodge", stat="identity") +
+  facet_wrap(~variable,ncol=1, scales="free_y") + guides(fill=FALSE, color=FALSE)
+```
+
+```{r}
+attach(data)
+rdplot(transfused_icu,hb_first_adm,c=6.95, x.lim=c(6,9) , title='tranfusion probability by hb at first adm')
+```
+
+
+```{r}
+rdplot(transfused_icu,hb_first_adm,c=6.95, subset =  (!vasopressor_icu | !adx_acs) ,  x.lim=c(6,9), title='tranfusion probability by hb at first adm for stable patients (no vasopressors)')
+```
+
+```{r}
+
+rdplot(transfused_icu,hb_first_adm,c=6.95, subset = (!!vasopressor_icu | !!adx_acs) ,  x.lim=c(6,9), title='tranfusion probability by hb at first adm hemodynamical  unstable patients')
+
+```
+
+
+thus we focus on the stable
+
+
+```{r}
+rdplot(hospital_mortality,hb_first_adm,c=6.95, subset = (!vasopressor_icu & !adx_acs),  x.lim=c(6,9),  y.lim=c(0,1), title='hospital mortality by hb at first adm for hemo stable patients (no presors or adx adm)')
+df_hemostable <- filter(data, (!vasopressor_icu & !adx_acs))
+```
+
+
+
+```{r}
+rdplot(hospital_mortality,hb_first_adm,c=6.95, subset = (!vasopressor_icu & !adx_acs),  x.lim=c(6,9),  y.lim=c(0,0.2), title='hospital mortality by hb at first adm for hemostable patients')
+```
+
+```{r}
+rdplot(df_hemostable$hospital_mortality,df_hemostable$hb_first_adm,c=6.95, covs = cbind(df_hemostable$apache_score,df_hemostable$male_gender,df_hemostable$age),  x.lim=c(6,9),  y.lim=c(0,0.2), title='hospital mortality with controls by hb at first adm for stable patients (no vasopressors)')
+```
+
+
+```{r}
+rdplot(hospital_mortality,hb_first_adm,c=6.95, subset = !vasopressor_icu & !adx_acs,  x.lim=c(6,9),  title='apache by hb at first adm for stable patients (no vasopressors)')
+```
+
+
+```{r}
+y <- hospital_mortality
+x <- hb_first_adm
+fuzzy <- transfused_icu
+z <- cbind(apache_score,male_gender,age)
+rd0 <- rdrobust(y=hospital_mortality, x, c=6.95, fuzzy=fuzzy,all=TRUE,  bwselect='msetwo', cluster= hospitalid,p=1, covs=z)
+summary(rd0)
+```
+
+
+
+
+```{r}
+# There is a bug when using subset and controls, this should work but fails:
+#rd1 <- rdrobust(y=hospital_mortality, x, c=6.95, fuzzy=fuzzy,all=TRUE,  bwselect='msetwo',covs=z, cluster= hospitalid,p=1, subset = !vasopressor_icu)
+#so instead we do this ugly hack
+df_hemostable <-filter(data,vasopressor_icu == 0)
+rd1 <- rdrobust(y=df_hemostable$hospital_mortality, df_hemostable$hb_first_adm, c=6.95, fuzzy=df_hemostable$transfused_icu, all=TRUE,  cluster= df_hemostable$hospitalid,p=1,  bwselect='msetwo', covs=cbind(df_hemostable$apache_score,df_hemostable$male_gender,df_hemostable$age))
+summary(rd1)
+```
+
+
+
+
+
+
+```{r}
+rd2 <- rdrobust(y=df_hemostable$hospital_mortality, df_hemostable$hb_first_adm, c=6.95, fuzzy=df_hemostable$transfused_icu, all=TRUE,  cluster= df_hemostable$hospitalid,p=1,  bwselect='certwo', covs=cbind(df_hemostable$apache_score,df_hemostable$male_gender,df_hemostable$age))
+summary(rd2)
+```
+
+
+bounds uses linear programming techniques to bound the marginal causal risk difference. For
+details, see Balke and Pearl (2009).
+
+```{r}
+library(ivtools)
+df_hemostable <- df_hemostable %>%  mutate(hb_first_adm_bellow7  = as.numeric(hb_first_adm <7)) 
+bounds(df_hemostable,'hb_first_adm_bellow7','transfused_icu','hospital_mortality')
+
+```
+
+
+
+```{r}
+install.packages('rddensity')
+library(rddensity)
+rdd_density_fit <- rddensity(hb_first_adm,c=6.95)
+summary(rdd_density_fit)
+```
+
+```{r}
+rdplotdensity(rdd_density_fit,hb_first_adm)
+```
+
+
+
+```{r}
+
+library(foreign)
+options(width=200)
+
+install.packages("rdlocrand")
+library(rdlocrand)
+
+###################################################################
+# Following:
+# rdlocrand: illustration file
+# !version 0.3 13-Mar-2018
+# Authors: Matias Cattaneo, Rocio Titiunik, Gonzalo Vazquez-Bare
+###################################################################
+
+
+
+# Select predetermined covariates to be used for window selector
+X=cbind(df_hemostable$apache_score,df_hemostable$age,df_hemostable$male_gender)
+#colnames(X) =  c("apache","age","male")
+
+# Running variable and outcome variable
+R = df_hemostable$hb_first_adm
+Y = df_hemostable$hospital_mortality
+D = as.numeric(R<6.95)
+fuzzy = df_hemostable$transfused_icu
+
+## Window selection with default options
+time1 = proc.time()
+tmp = rdwinselect(R,X, cutoff = 6.95)
+time1 = proc.time() - time1
+
+tmp <- rdrandinf(Y,R,statistic='all',covariates=X,wmin=.2,wstep=.1,rdwreps=10000, cutoff=6.95, nwindows=30, plot=TRUE, fuzzy=as.numeric(df_hemostable$transfused_icu))
+
+```
+
+
+#TODO: 
+look at per hospital, check that their bigest jump is always at 7, if not then estimate by hospital grouping on jump
+
+
+
